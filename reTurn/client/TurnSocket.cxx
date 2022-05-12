@@ -112,7 +112,7 @@ TurnSocket::requestSharedSecret(char* username, unsigned int usernameSize,
 }
 
 void 
-TurnSocket::setUsernameAndPassword(const char* username, const char* password, bool shortTermAuth)
+TurnSocket::setUsernameAndPassword(const resip::Data &username, const resip::Data &password, bool shortTermAuth)
 {
    mUsername = username;
    mPassword = password;
@@ -943,18 +943,25 @@ TurnSocket::sendRequestAndGetResponse(StunMessage& request, asio::error_code& er
       request.setSoftware(mSoftware.c_str());
    }
 
-   if(addAuthInfo && !mUsername.empty() && !mHmacKey.empty())
+   if(addAuthInfo && !mUsername.empty())
    {
-      request.mHasMessageIntegrity = true;
-      request.setUsername(mUsername.c_str()); 
-      request.mHmacKey = mHmacKey;
-      if(!mRealm.empty())
+     
+
+      if (!mHmacKey.empty())
       {
-         request.setRealm(mRealm.c_str());
-      }
-      if(!mNonce.empty())
-      {
-         request.setNonce(mNonce.c_str());
+         request.setUsername(mUsername);
+
+         request.mHasMessageIntegrity = true;
+
+         request.mHmacKey = mHmacKey;
+         if (!mRealm.empty())
+         {
+            request.setRealm(mRealm.c_str());
+         }
+         if (!mNonce.empty())
+         {
+            request.setNonce(mNonce.c_str());
+         }
       }
    }
 
@@ -1045,7 +1052,8 @@ TurnSocket::sendRequestAndGetResponse(StunMessage& request, asio::error_code& er
                {
                   mNonce = *response->mNonce;
                   mRealm = *response->mRealm;
-                  response->calculateHmacKey(mHmacKey, mUsername, mRealm, mPassword);
+                  //response->calculateHmacKey(mHmacKey, mUsername, mRealm, mPassword);
+                  response->calculateHmacKeySHA256(mHmacKey, mUsername, mRealm, mNonce, mPassword);
 
                   // Re-Issue reques (with new TID)
                   request.createHeader(request.mClass, request.mMethod);  // updates TID

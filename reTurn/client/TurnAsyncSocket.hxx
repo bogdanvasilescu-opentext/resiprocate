@@ -28,7 +28,7 @@
 #include <memory>
 #include <utility>
 
-#define UDP_RT0 100  // RTO - Estimate of Roundtrip time - 100ms is recommened for fixed line transport - the initial value should be configurable
+#define UDP_RT0 650  // RTO - Estimate of Roundtrip time - 100ms is recommened for fixed line transport - the initial value should be configurable
                      // Should also be calculation this on the fly
 #define UDP_MAX_RETRANSMITS    7       // Defined by RFC5389 (Rc) - should be configurable
 #define TCP_RESPONSE_TIME      39500   // Defined by RFC5389 (Ti) - should be configurable
@@ -61,7 +61,7 @@ public:
    void requestSharedSecret();
 
    // Set the username and password for all future requests
-   void setUsernameAndPassword(const char* username, const char* password, bool shortTermAuth=false);
+   void setUsernameAndPassword(const resip::Data &username, const resip::Data &password, bool shortTermAuth=false);
 
    // Sets the local HmacKey, used to check the integrity of incoming STUN messages
    void setLocalPassword(const char* password);
@@ -127,6 +127,10 @@ protected:
    resip::Data mHmacKey;
    resip::Data mRealm;
    resip::Data mNonce;
+
+   bool mMustUseMSSequenceNumber {false };
+   UInt32 mMSSequenceNumber{1};
+   char mMSConnectionId[20];
 
    // Attributes
    resip::Data mSoftware;
@@ -250,6 +254,7 @@ private:
    StunMessage* createNewStunMessage(UInt16 stunclass, UInt16 method, bool addAuthInfo=true);
    void sendStunMessage(StunMessage* request, bool reTransmission=false, unsigned int numRetransmits=UDP_MAX_RETRANSMITS, unsigned int retrans_iterval_ms=DEFAULT_RETRANS_INTERVAL_MS, const StunTuple* targetAddress=NULL);
    void sendToRemotePeer(RemotePeer& remotePeer, const std::shared_ptr<DataBuffer>& data);
+   void sendToRemotePeerMSTurn(const asio::ip::address& address, unsigned short port, const std::shared_ptr<DataBuffer>& data);
    void sendOverChannel(unsigned short channel, const std::shared_ptr<DataBuffer>& data);  // send with turn framing
 
    asio::error_code handleStunMessage(StunMessage& stunMessage);

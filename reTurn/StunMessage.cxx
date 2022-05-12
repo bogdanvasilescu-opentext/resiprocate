@@ -154,6 +154,7 @@ StunMessage::init()
    mHasIceControlled = false;
    mIceControlledTieBreaker = 0;
    mHasIceControlling = false;
+   mHasMSSequenceNumber = false;
    mIceControllingTieBreaker = 0;
    mErrorCode.reason = 0;
    mUsername = 0;
@@ -196,7 +197,7 @@ StunMessage::setErrorCode(unsigned short errorCode, const char* reason)
 }
 
 void 
-StunMessage::setUsername(const char* username)
+StunMessage::setUsername(const resip::Data &username)
 {
    mHasUsername = true;
    if(mUsername)
@@ -210,7 +211,7 @@ StunMessage::setUsername(const char* username)
 }
 
 void 
-StunMessage::setPassword(const char* password)
+StunMessage::setPassword(const resip::Data &password)
 {
    mHasPassword = true;
    if(mPassword)
@@ -278,6 +279,14 @@ StunMessage::setTurnData(const char* data, unsigned int len)
    {
       mTurnData = new Data(data, len);
    }
+}
+
+void
+StunMessage::setMSConnectionIdAndSequenceNumber(const char connectionId[20], UInt32 sequenceNumber)
+{
+   mHasMSSequenceNumber = true;
+   mMSSequenceNumber.sequenceNumber = sequenceNumber;
+   memcpy(mMSSequenceNumber.connectionId, connectionId, 20);
 }
 
 void 
@@ -381,7 +390,7 @@ StunMessage::stunParseAtrXorAddress( char* body, unsigned int hdrLen, StunAtrAdd
 bool 
 StunMessage::stunParseAtrAddress( char* body, unsigned int hdrLen, StunAtrAddress& result )
 {
-   if ( hdrLen != 8 /* ipv4 size */ && hdrLen != 20 /* ipv6 size */ )
+   if ( hdrLen != 8 /* ipv4 size */ && hdrLen != 20 /* ipv6 size */ && hdrLen != 18 /* ipv6 size MS*/)
    {
       WarningLog(<< "hdrLen wrong for Address");
       return false;
@@ -426,6 +435,20 @@ StunMessage::stunParseAtrEvenPort( char* body, unsigned int hdrLen,  TurnAtrEven
    result.propType = *body & 0x80;  // copy first 8 bits into propType - but only look at highest order
 	
    return true;
+}
+
+bool 
+StunMessage::stunParseAtrMSSequenceNumber( char* body, unsigned int hdrLen, TurnAtrMSSequenceNumber& result )
+{
+   if ( hdrLen != 24 )
+   {
+      WarningLog(<< "hdrLen wrong for MSSequence Number");
+      return false;
+   }
+
+   memcpy(result.connectionId, body, 20);
+   	
+   return stunParseAtrUInt32(body + 20, 4, result.sequenceNumber);
 }
 
 bool 
@@ -496,7 +519,7 @@ StunMessage::stunParseAtrUnknown( char* body, unsigned int hdrLen,  StunAtrUnkno
 bool 
 StunMessage::stunParseAtrIntegrity( char* body, unsigned int hdrLen,  StunAtrIntegrity& result )
 {
-   if ( hdrLen != 20)
+   if ( hdrLen != 32)
    {
       WarningLog(<< "hdrLen wrong for message integrity");
       return false;
@@ -556,7 +579,7 @@ StunMessage::stunParseMessage( char* buf, unsigned int bufLen)
 		
       unsigned int attrLen = ntohs(attr->length);
       // attrLen may not be on 4 byte boundary, in which case we need to pad to 4 bytes when advancing to next attribute
-      unsigned int attrLenPad = attrLen % 4 == 0 ? 0 : 4 - (attrLen % 4);  
+      unsigned int attrLenPad = 0; //attrLen % 4 == 0 ? 0 : 4 - (attrLen % 4);  
       int atrType = ntohs(attr->type);
 		
       StackLog(<< "Found attribute type=" << atrType << " length=" << attrLen);
@@ -571,6 +594,41 @@ StunMessage::stunParseMessage( char* buf, unsigned int bufLen)
 
       switch ( atrType )
       {
+         case MSAlternateServer:
+            {
+               
+               StackLog(<< "MSAlternateServer = ?" );
+            }
+            break;
+
+         case MSVersion:
+            {
+
+               UInt32 msVersion{};
+               
+               if ( stunParseAtrUInt32(  body,  attrLen, msVersion)== false )
+               {
+                  WarningLog(<< "problem parsing MSVersion");
+                  return false;
+               }
+               StackLog(<< "MSVersion = " << msVersion);
+            }
+            break;
+
+         case MSMagicCookie:
+         {
+
+            UInt32 msMagicCookie{};
+            
+            if ( stunParseAtrUInt32(  body,  attrLen, msMagicCookie)== false )
+            {
+               WarningLog(<< "problem parsing msMagicCookie");
+               return false;
+            }
+            StackLog(<< "msMagicCookie = " << msMagicCookie);
+         }
+         break;
+
          case MappedAddress:        
             if(!mHasMappedAddress)
             {
@@ -873,22 +931,44 @@ StunMessage::stunParseMessage( char* buf, unsigned int bufLen)
             }
             break;  
 
-         case SecondaryAddress:
-            if(!mHasSecondaryAddress)
+      case MSSequenceNumber:
+         {
+            StackLog(<< "MSSequenceNumber = " << mAlternateServer);
+            if(!mHasMSSequenceNumber)
             {
-               mHasSecondaryAddress = true;
-               if ( stunParseAtrAddress(  body,  attrLen,  mSecondaryAddress ) == false )
+               mHasMSSequenceNumber = true;
+
+               if (stunParseAtrMSSequenceNumber(body, attrLen, mMSSequenceNumber) == false)
                {
-                  WarningLog(<< "problem parsing secondaryAddress");
+                  WarningLog(<< "problem parsing MSSequenceNumber");
                   return false;
                }
-               StackLog(<< "SecondaryAddress = " << mSecondaryAddress);
+
+               StackLog(<< "MSSequenceNumber = " << mMSSequenceNumber.sequenceNumber);
             }
             else
             {
-               WarningLog(<< "Duplicate SecondaryAddress in message - ignoring.");
+               WarningLog(<< "Duplicate MS Sequence attribute in message - ignoring.");
             }
-            break;  
+         }
+         break;
+
+         // case SecondaryAddress:
+         //    if(!mHasSecondaryAddress)
+         //    {
+         //       mHasSecondaryAddress = true;
+         //       if ( stunParseAtrAddress(  body,  attrLen,  mSecondaryAddress ) == false )
+         //       {
+         //          WarningLog(<< "problem parsing secondaryAddress");
+         //          return false;
+         //       }
+         //       StackLog(<< "SecondaryAddress = " << mSecondaryAddress);
+         //    }
+         //    else
+         //    {
+         //       WarningLog(<< "Duplicate SecondaryAddress in message - ignoring.");
+         //    }
+         //    break;  
 
          // TURN attributes
 
@@ -1317,7 +1397,7 @@ StunMessage::encode(char* buf, const char* data, unsigned int length)
 char* 
 StunMessage::encodeTurnData(char *ptr, const resip::Data* td)
 {
-   UInt16 padsize = (UInt16)td->size() % 4 == 0 ? 0 : 4 - ((UInt16)td->size() % 4);
+   UInt16 padsize = 0;//(UInt16)td->size() % 4 == 0 ? 0 : 4 - ((UInt16)td->size() % 4);
 
    ptr = encode16(ptr, TurnData);
    ptr = encode16(ptr, (UInt16)td->size());
@@ -1380,7 +1460,7 @@ char*
 StunMessage::encodeAtrError(char* ptr, const StunAtrError& atr)
 {
    resip_assert(atr.reason);
-   UInt16 padsize = (unsigned int)atr.reason->size() % 4 == 0 ? 0 : 4 - ((unsigned int)atr.reason->size() % 4);
+   UInt16 padsize = 0; //(unsigned int)atr.reason->size() % 4 == 0 ? 0 : 4 - ((unsigned int)atr.reason->size() % 4);
 
    ptr = encode16(ptr, ErrorCode);
    ptr = encode16(ptr, 4 + (UInt16)atr.reason->size()); 
@@ -1395,7 +1475,7 @@ StunMessage::encodeAtrError(char* ptr, const StunAtrError& atr)
 char* 
 StunMessage::encodeAtrUnknown(char* ptr, const StunAtrUnknown& atr)
 {
-   UInt16 padsize = (2*atr.numAttributes) % 4 == 0 ? 0 : 4 - ((2*atr.numAttributes) % 4);
+   UInt16 padsize = 0; //(2*atr.numAttributes) % 4 == 0 ? 0 : 4 - ((2*atr.numAttributes) % 4);
    ptr = encode16(ptr, UnknownAttribute);
    ptr = encode16(ptr, 2*atr.numAttributes);
    for (int i=0; i<atr.numAttributes; i++)
@@ -1410,7 +1490,7 @@ StunMessage::encodeAtrString(char* ptr, UInt16 type, const Data* atr, UInt16 max
 {
    resip_assert(atr);
    UInt16 size = atr->size() > maxBytes ? maxBytes : (UInt16)atr->size();
-   UInt16 padsize = size % 4 == 0 ? 0 : 4 - (size % 4);
+   UInt16 padsize = 0; //size % 4 == 0 ? 0 : 4 - (size % 4);
 	
    ptr = encode16(ptr, type);
    ptr = encode16(ptr, size);  
@@ -1423,7 +1503,7 @@ char*
 StunMessage::encodeAtrIntegrity(char* ptr, const StunAtrIntegrity& atr)
 {
    ptr = encode16(ptr, MessageIntegrity);
-   ptr = encode16(ptr, 20);
+   ptr = encode16(ptr, sizeof(atr.hash));
    ptr = encode(ptr, atr.hash, sizeof(atr.hash));
    return ptr;
 }
@@ -1438,6 +1518,18 @@ StunMessage::encodeAtrEvenPort(char* ptr, const TurnAtrEvenPort& atr)
    ptr = encode16(ptr, 0); // pad
    return ptr;
 }
+
+char*
+StunMessage::encodeAtrMSSequenceNumber(char* ptr, TurnAtrMSSequenceNumber& atr)
+{
+   ptr = encode16(ptr, MSSequenceNumber);
+   ptr = encode16(ptr, 24);
+   memcpy(ptr, atr.connectionId, 20);
+   ptr += 20;
+   return encode32(ptr, atr.sequenceNumber);
+}
+
+
 
 bool 
 StunMessage::hasMagicCookie()
@@ -1460,11 +1552,27 @@ StunMessage::stunEncodeMessage(char* buf, unsigned int bufLen)
 
    StackLog(<< "Encoding stun message: " << mHeader);
 
+   ptr = encodeAtrUInt32(ptr, MSMagicCookie, 0x72c64bc6);
+   ptr = encodeAtrUInt32(ptr, MSVersion, 4);
+
    if (mHasMappedAddress)
    {
       StackLog(<< "Encoding MappedAddress: " << mMappedAddress);
       ptr = encodeAtrAddress (ptr, MappedAddress, mMappedAddress);
    }
+
+   if (mHasMSSequenceNumber)
+   {
+      StackLog(<< "Encoding MSSequenceNumber: " << mMSSequenceNumber.sequenceNumber);
+      ptr = encodeAtrMSSequenceNumber(ptr, mMSSequenceNumber);
+   }
+
+   if (mHasDestinationAddress)
+   {
+      StackLog(<< "Encoding destination address: " << mDestinationAddress);
+      ptr = encodeAtrAddress(ptr, MSDestinationAddress, mDestinationAddress);
+   }
+
    if (mHasResponseAddress)
    {
       StackLog(<< "Encoding ResponseAddress: " << mResponseAddress);
@@ -1582,12 +1690,12 @@ StunMessage::stunEncodeMessage(char* buf, unsigned int bufLen)
    if (mHasTurnEvenPort)
    {
       StackLog(<< "Encoding Turn EvenPort: " << (int)mTurnEvenPort.propType);
-      ptr = encodeAtrEvenPort(ptr, mTurnEvenPort);
+      //ptr = encodeAtrEvenPort(ptr, mTurnEvenPort);
    }   
    if (mHasTurnRequestedTransport)
    {
       StackLog(<< "Encoding Turn RequestedTransport: " << (int)mTurnRequestedTransport);
-      ptr = encodeAtrUInt32(ptr, TurnRequestedTransport, UInt32(mTurnRequestedTransport << 24));
+      //ptr = encodeAtrUInt32(ptr, TurnRequestedTransport, UInt32(mTurnRequestedTransport << 24));
    }   
    if (mHasTurnDontFragment)
    {
@@ -1634,7 +1742,7 @@ StunMessage::stunEncodeMessage(char* buf, unsigned int bufLen)
 
    // Update Length in header now - needed in message integrity calculations
    UInt16 msgSize = ptr - buf - sizeof(StunMsgHdr);
-   if(mHasMessageIntegrity) msgSize += 24;  // 4 (attribute header) + 20 (attribute value)
+   if(mHasMessageIntegrity) msgSize += 36;  // 4 (attribute header) + 32 (attribute value)
    encode16(lengthp, msgSize);
 
    if (mHasMessageIntegrity)
@@ -1642,7 +1750,7 @@ StunMessage::stunEncodeMessage(char* buf, unsigned int bufLen)
       int len = ptr - buf;
       StackLog(<< "Adding message integrity: buffer size=" << len << ", hmacKey=" << mHmacKey.hex());
       StunAtrIntegrity integrity;
-      computeHmac(integrity.hash, buf, len, mHmacKey.c_str(), (int)mHmacKey.size());
+      computeHmac256(integrity.hash, buf, len, mHmacKey.c_str(), (int)mHmacKey.size());
 	   ptr = encodeAtrIntegrity(ptr, integrity);
    }
 
@@ -1692,7 +1800,30 @@ StunMessage::computeHmac(char* hmac, const char* input, int length, const char* 
         key, sizeKey, 
         reinterpret_cast<const unsigned char*>(input), length, 
         reinterpret_cast<unsigned char*>(hmac), &resultSize);
+
    resip_assert(resultSize == 20);
+}
+
+   void
+StunMessage::computeHmac256(char* hmac, const char* input, int length, const char* key, int sizeKey)
+{
+   //StackLog(<< "***computeHmac: input='" << Data(input, length).hex() << "', length=" << length << ", key='" << Data(key, sizeKey).hex() << "', keySize=" << sizeKey);
+
+   Data text;
+   text.append(input, length);
+
+   const char padding[64] = {};
+
+   text.append(padding, 64 - (length % 64));
+
+
+   unsigned int resultSize=32;
+   auto *p = HMAC(EVP_sha256(), 
+        key, sizeKey, 
+        reinterpret_cast<const unsigned char*>(text.data()), text.size(), 
+        reinterpret_cast<unsigned char*>(hmac), &resultSize);
+
+   resip_assert(p != nullptr && resultSize == 32);
 }
 #endif
 
@@ -1807,6 +1938,9 @@ StunMessage::calculateHmacKey(Data& hmacKey, const Data& longtermAuthenticationP
    }
 }
 
+
+
+
 void
 StunMessage::calculateHmacKeyForHa1(Data& hmacKey, const Data& ha1)
 {
@@ -1832,12 +1966,54 @@ StunMessage::calculateHmacKey(Data& hmacKey, const Data& username, const Data& r
    StackLog(<< "calculateHmacKey: '" << username << ":" << realm << ":" << longtermAuthenticationPassword << "' = '" << hmacKey.hex() << "'");
 }
 
+      void
+StunMessage::calculateHmacKeySHA256(Data& hmacKey, const Data& username, const Data& realm, const Data& nonce, const Data& longtermAuthenticationPassword)
+{
+   unsigned char key[32];
+   unsigned int keyLen = 32;
+
+   auto *p = HMAC(EVP_sha256(), nonce.data(), nonce.size(), (unsigned char*)longtermAuthenticationPassword.data(), longtermAuthenticationPassword.size(), key, &keyLen);
+
+   resip_assert(p != nullptr && keyLen == 32);
+
+   Data keyMaterial;
+
+   char flags = 1;
+   keyMaterial.append(&flags, 1);
+   keyMaterial.append("TURN", 4);
+
+   flags = 0;
+   keyMaterial.append(&flags, 1);
+   keyMaterial.append(username.data(), username.size());
+   // keyMaterial.append(realm.data(), realm.size());
+
+   std::string_view rtcmedia = "rtcmedia";
+   
+   keyMaterial.append(rtcmedia.data(), rtcmedia.size());
+
+   unsigned int hundred = htonl(0x100);
+
+   keyMaterial.append((char*)&hundred, 4);
+
+
+   unsigned char key1[32];
+   unsigned int keyLen1 = 32;
+
+   p = HMAC(EVP_sha256(), key, keyLen, (unsigned char*)keyMaterial.data(), keyMaterial.size(), key1, &keyLen1);
+
+   resip_assert(p != nullptr && keyLen1 == 32);
+
+   hmacKey.append((char*)key1, 32);
+  
+   StackLog(<< "calculateHmacKey: '" << username << ":" << realm << ":" << longtermAuthenticationPassword << "' = '" << hmacKey.hex() << "'");
+}
+
 bool 
 StunMessage::checkMessageIntegrity(const Data& hmacKey)
 {
    if(mHasMessageIntegrity)
    {
-      unsigned char hmac[20];
+      unsigned char hmac[32];
 
       // Store original stun message length from mBuffer 
       char *lengthposition = (char*)mBuffer.data() + 2;
@@ -1849,14 +2025,14 @@ StunMessage::checkMessageIntegrity(const Data& hmacKey)
       memcpy(lengthposition, &tempLength, 2);
 
       // Calculate HMAC
-      int iHMACBufferSize = mMessageIntegrityMsgLength - 24 /* MessageIntegrity size */ + sizeof(StunMsgHdr); // The entire message proceeding the message integrity attribute
+      int iHMACBufferSize = mMessageIntegrityMsgLength - 36 /* MessageIntegrity size */ + sizeof(StunMsgHdr); // The entire message proceeding the message integrity attribute
       StackLog(<< "Checking message integrity: length=" << mMessageIntegrityMsgLength << ", size=" << iHMACBufferSize << ", hmacKey=" << hmacKey.hex());
-      computeHmac((char*)hmac, mBuffer.data(), iHMACBufferSize, hmacKey.c_str(), hmacKey.size());
+      computeHmac256((char*)hmac, mBuffer.data(), iHMACBufferSize, hmacKey.c_str(), hmacKey.size());
 
       // Restore original stun message length in mBuffer
       memcpy(lengthposition, &originalLength, 2);
 
-      if (memcmp(mMessageIntegrity.hash, hmac, 20) == 0)
+      if (memcmp(mMessageIntegrity.hash, hmac, 32) == 0)
       {
          return true;
       }

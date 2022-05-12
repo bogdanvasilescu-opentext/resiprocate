@@ -91,7 +91,7 @@ TurnAsyncSocket::doRequestSharedSecret()
 }
 
 void
-TurnAsyncSocket::setUsernameAndPassword(const char* username, const char* password, bool shortTermAuth)
+TurnAsyncSocket::setUsernameAndPassword(const resip::Data &username, const resip::Data &password, bool shortTermAuth)
 {
    mIOService.dispatch(weak_bind<AsyncSocketBase, void()>(mAsyncSocketBase.shared_from_this(), [=] { doSetUsernameAndPassword(new Data(username), new Data(password), shortTermAuth); }));
 }
@@ -286,7 +286,7 @@ TurnAsyncSocket::doRefreshAllocation(unsigned int lifetime)
    }
 
    // Form Turn Refresh request
-   StunMessage* request = createNewStunMessage(StunMessage::StunClassRequest, StunMessage::TurnRefreshMethod);
+   StunMessage* request = createNewStunMessage(StunMessage::StunClassRequest, StunMessage::TurnAllocateMethod);
    if(lifetime != UnspecifiedLifetime)
    {
       request->mHasTurnLifetime = true;
@@ -398,7 +398,7 @@ TurnAsyncSocket::createNewStunMessage(UInt16 stunclass, UInt16 method, bool addA
    if(addAuthInfo && !mUsername.empty() && !mHmacKey.empty())
    {
       msg->mHasMessageIntegrity = true;
-      msg->setUsername(mUsername.c_str()); 
+      msg->setUsername(mUsername); 
       msg->mHmacKey = mHmacKey;
       if(!mRealm.empty())
       {
@@ -409,6 +409,14 @@ TurnAsyncSocket::createNewStunMessage(UInt16 stunclass, UInt16 method, bool addA
          msg->setNonce(mNonce.c_str());
       }
    }
+
+   if (mMustUseMSSequenceNumber)
+   {
+      msg->setMSConnectionIdAndSequenceNumber(mMSConnectionId, mMSSequenceNumber);
+      ++mMSSequenceNumber;
+
+   }
+
    return msg;
 }
 
@@ -424,7 +432,7 @@ TurnAsyncSocket::sendStunMessage(StunMessage* message, bool reTransmission, unsi
    if(!reTransmission)
    {
       // If message is a request, then start appropriate transaction and retranmission timers
-      if(message->mClass == StunMessage::StunClassRequest)
+      if(message->mClass == StunMessage::StunClassRequest && !(message->mMethod == StunMessage::TurnRefreshMethod))
       {
          const auto requestEntry = std::make_shared<RequestEntry>(mIOService, this, message, numRetransmits, retrans_iterval_ms, targetAddress);
          mActiveRequestMap[message->mHeader.magicCookieAndTid] = requestEntry;
@@ -658,7 +666,7 @@ TurnAsyncSocket::handleStunMessage(StunMessage& stunMessage)
             {
                mNonce = *stunMessage.mNonce;
                mRealm = *stunMessage.mRealm;
-               stunMessage.calculateHmacKey(mHmacKey, mUsername, mRealm, mPassword);
+               stunMessage.calculateHmacKeySHA256(mHmacKey, mUsername, mRealm, mNonce, mPassword);
 
                // Create a new transaction - by starting with old request
                StunMessage* newRequest = requestEntry->mRequestMessage;
@@ -666,7 +674,7 @@ TurnAsyncSocket::handleStunMessage(StunMessage& stunMessage)
 
                newRequest->createHeader(newRequest->mClass, newRequest->mMethod);  // updates TID
                newRequest->mHasMessageIntegrity = true;
-               newRequest->setUsername(mUsername.c_str()); 
+               newRequest->setUsername(mUsername); 
                newRequest->mHmacKey = mHmacKey;
                newRequest->setRealm(mRealm.c_str());
                newRequest->setNonce(mNonce.c_str());
@@ -914,6 +922,13 @@ TurnAsyncSocket::handleAllocateResponse(StunMessage &request, StunMessage &respo
          relayTuple.setTransportType(mRelayTransportType);
          StunMessage::setTupleFromStunAtrAddress(relayTuple, response.mTurnXorRelayedAddress);
       }
+      else if (response.mHasMappedAddress)
+      {
+         relayTuple.setTransportType(mRelayTransportType);
+         StunMessage::setTupleFromStunAtrAddress(relayTuple, response.mMappedAddress);
+      }
+
+
       if(response.mHasTurnLifetime)
       {
          mLifetime = response.mTurnLifetime;
@@ -921,6 +936,13 @@ TurnAsyncSocket::handleAllocateResponse(StunMessage &request, StunMessage &respo
       else
       {
          mLifetime = 0;
+      }
+
+      if (response.mHasMSSequenceNumber)
+      {
+         mMustUseMSSequenceNumber = true;
+         memcpy(mMSConnectionId, response.mMSSequenceNumber.connectionId, 20);
+         //mMSSequenceNumber = response.mMSSequenceNumber.sequenceNumber + 1;
       }
 
       // All was well - return 0 errorCode
@@ -1094,6 +1116,8 @@ TurnAsyncSocket::doSendToFramed(const asio::ip::address& address, unsigned short
       doChannelBinding(*remotePeer);
    }
    return sendToRemotePeer(*remotePeer, data);
+
+   //return sendToRemotePeerMSTurn(address, port, data);
 }
 
 void
@@ -1120,6 +1144,31 @@ TurnAsyncSocket::sendToRemotePeer(RemotePeer& remotePeer, const std::shared_ptr<
       // Send indication to Turn Server
       sendStunMessage(ind);
    }
+}
+
+   void
+TurnAsyncSocket::sendToRemotePeerMSTurn(const asio::ip::address& address, unsigned short port, const std::shared_ptr<DataBuffer>& data)
+{
+   
+      // Data must be wrapped in a Send Indication
+      // Wrap data in a SendInd
+      StunMessage* ind = createNewStunMessage(StunMessage::StunClassRequest, StunMessage::TurnRefreshMethod, true);
+      ind->mCntTurnXorPeerAddress = 1;
+      StunMessage::setStunAtrAddressFromTuple(ind->mTurnXorPeerAddress[0], reTurn::StunTuple{reTurn::StunTuple::UDP, address, port});
+      if(data->size() > 0)
+      {
+         ind->setTurnData(data->data(), data->size());
+      }
+
+
+   ind->mHasDestinationAddress = true;
+   ind->mDestinationAddress.port = port;
+   ind->mDestinationAddress.family = StunMessage::IPv4Family;
+   ind->mDestinationAddress.addr.ipv4 = address.to_v4().to_ulong(); 
+
+      // Send indication to Turn Server
+      sendStunMessage(ind);
+   
 }
 
 void

@@ -45,7 +45,7 @@ public:
                                         char* password, unsigned int passwordSize);
 
    // Set the username and password for all future requests
-   void setUsernameAndPassword(const char* username, const char* password, bool shortTermAuth=false);
+   void setUsernameAndPassword(const resip::Data &username, const resip::Data &password, bool shortTermAuth=false);
 
    // Software attribute
    void setSoftware(const char* software);

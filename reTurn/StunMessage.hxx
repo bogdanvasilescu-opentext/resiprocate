@@ -41,12 +41,14 @@ public:
    unsigned int stunEncodeFramedMessage(char* buf, unsigned int bufLen);  // Used for TURN-05 framing only
 
    void setErrorCode(unsigned short errorCode, const char* reason);
-   void setUsername(const char* username);
-   void setPassword(const char* password);
+   void setUsername(const resip::Data &username);
+   void setPassword(const resip::Data &password);
    void setRealm(const char* realm);
    void setNonce(const char* nonce);
    void setSoftware(const char* software);
    void setTurnData(const char* data, unsigned int len);
+   void setMSConnectionIdAndSequenceNumber(const char connectionId[20], UInt32 sequenceNumber);
+
 
    // ICE-specific attributes
    void setIcePriority(UInt32 priority);
@@ -61,6 +63,7 @@ public:
    void calculateHmacKey(resip::Data& hmacKey, const resip::Data& longtermAuthenticationPassword);
    void calculateHmacKeyForHa1(resip::Data& hmacKey, const resip::Data& ha1);
    void calculateHmacKey(resip::Data& hmacKey, const resip::Data& username, const resip::Data& realm, const resip::Data& longtermAuthenticationPassword);
+   void calculateHmacKeySHA256(resip::Data& hmacKey, const resip::Data& username, const resip::Data& realm, const resip::Data& nonce, const resip::Data& longtermAuthenticationPassword);
    bool checkMessageIntegrity(const resip::Data& hmacKey);
    bool checkFingerprint();
 
@@ -129,15 +132,20 @@ public:
    const static UInt16 ErrorCode        = 0x0009;
    const static UInt16 UnknownAttribute = 0x000A;
    const static UInt16 ReflectedFrom    = 0x000B;  // deprecated by RFC5389 (used for backwards compatibility to RFC3489 only)
-   const static UInt16 Realm            = 0x0014;
-   const static UInt16 Nonce            = 0x0015;
+   const static UInt16 MSAlternateServer= 0x000E;
+   const static UInt16 MSMagicCookie    = 0x000F;
+   const static UInt16 MSDestinationAddress = 0x0011;
+   const static UInt16 Realm            = 0x0015;
+   const static UInt16 Nonce            = 0x0014;
    const static UInt16 XorMappedAddress = 0x0020;
    const static UInt16 XorMappedAddress_old = 0x8020; // deprecated
    // Comprehension Optional Attributes
+   const static UInt16 MSVersion        = 0x8008;
    const static UInt16 Software         = 0x8022;
    const static UInt16 AlternateServer  = 0x8023;
    const static UInt16 Fingerprint      = 0x8028;  
    const static UInt16 SecondaryAddress = 0x8050;  // Non standard extension
+   const static UInt16 MSSequenceNumber = 0x8050;  // Non standard extension
 
    // TURN specific message attributes - from behave-turn-12
    const static UInt16 TurnChannelNumber      = 0x000C;
@@ -157,6 +165,7 @@ public:
    // ICE specific message attributes - from draft-ietf-mmusic-ice-19
    const static UInt16 IcePriority            = 0x0024;
    const static UInt16 IceUseCandidate        = 0x0025;
+   
    const static UInt16 IceControlled          = 0x8029;
    const static UInt16 IceControlling         = 0x802A;
 
@@ -197,6 +206,12 @@ public:
 
    typedef struct
    {
+      char connectionId[20];
+      UInt32 sequenceNumber;
+   } TurnAtrMSSequenceNumber;
+
+   typedef struct
+   {
       UInt8 errorClass;
       UInt8 number;
       resip::Data* reason;
@@ -210,7 +225,7 @@ public:
 
    typedef struct
    {
-      char hash[20];
+      char hash[32];
    } StunAtrIntegrity;
 
    typedef struct
@@ -272,6 +287,9 @@ public:
 
    bool mHasReflectedFrom;
    StunAtrAddress mReflectedFrom;
+
+   bool mHasDestinationAddress;
+   StunAtrAddress mDestinationAddress;
 
    bool mHasRealm;
    resip::Data* mRealm;
@@ -344,6 +362,9 @@ public:
 
    StunAtrUnknown mUnknownRequiredAttributes;
 
+   bool mHasMSSequenceNumber{false};
+   TurnAtrMSSequenceNumber mMSSequenceNumber{};
+
    // Utility APIs
    void applyXorToAddress(const StunAtrAddress& in, StunAtrAddress& out);  // ensure tid is set first
    static void setStunAtrAddressFromTuple(StunAtrAddress& address, const StunTuple& tuple);
@@ -362,6 +383,7 @@ private:
    bool stunParseAtrUnknown( char* body, unsigned int hdrLen, StunAtrUnknown& result );
    bool stunParseAtrIntegrity( char* body, unsigned int hdrLen, StunAtrIntegrity& result );
    bool stunParseAtrEvenPort( char* body, unsigned int hdrLen, TurnAtrEvenPort& result );
+   bool stunParseAtrMSSequenceNumber(char* body, unsigned hdrLen, TurnAtrMSSequenceNumber& result);
 
    bool stunParseMessage( char* buf, unsigned int bufLen);
 
@@ -379,7 +401,11 @@ private:
    char* encodeAtrString(char* ptr, UInt16 type, const resip::Data* atr, UInt16 maxBytes);
    char* encodeAtrIntegrity(char* ptr, const StunAtrIntegrity& atr);
    char* encodeAtrEvenPort(char* ptr, const TurnAtrEvenPort& atr);
+   char* encodeAtrMSSequenceNumber(char* ptr, TurnAtrMSSequenceNumber &atr);
+
+
    void computeHmac(char* hmac, const char* input, int length, const char* key, int sizeKey);
+   void computeHmac256(char* hmac, const char* input, int length, const char* key, int sizeKey);
 
    bool mIsValid;
 };
